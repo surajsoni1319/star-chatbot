@@ -5,8 +5,9 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 
 # Page configuration
 st.set_page_config(
@@ -30,6 +31,10 @@ if 'uploaded_pdf_names' not in st.session_state:
 # Directory to store vector databases
 VECTORSTORE_DIR = "vectorstore_data"
 os.makedirs(VECTORSTORE_DIR, exist_ok=True)
+
+def format_docs(docs):
+    """Format documents for the prompt"""
+    return "\n\n".join(doc.page_content for doc in docs)
 
 def process_pdfs(uploaded_files, api_key):
     """Process uploaded PDFs and create vector store"""
@@ -82,7 +87,8 @@ def process_pdfs(uploaded_files, api_key):
     
     # Setup QA chain
     with st.spinner("Setting up QA system..."):
-        prompt_template = """Use the following pieces of context to answer the question at the end. 
+        # Create prompt template
+        template = """Use the following pieces of context to answer the question at the end.
         If you don't know the answer, just say that you don't know, don't try to make up an answer.
         
         Context: {context}
@@ -91,22 +97,23 @@ def process_pdfs(uploaded_files, api_key):
         
         Answer:"""
         
-        PROMPT = PromptTemplate(
-            template=prompt_template, 
-            input_variables=["context", "question"]
-        )
+        prompt = ChatPromptTemplate.from_template(template)
         
+        # Create LLM
         llm = ChatOpenAI(
             model_name="gpt-3.5-turbo",
             temperature=0
         )
         
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
-            return_source_documents=True,
-            chain_type_kwargs={"prompt": PROMPT}
+        # Create retriever
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+        
+        # Create chain
+        qa_chain = (
+            {"context": retriever | format_docs, "question": RunnablePassthrough()}
+            | prompt
+            | llm
+            | StrOutputParser()
         )
         
         st.session_state.qa_chain = qa_chain
@@ -128,7 +135,7 @@ def load_existing_vectorstore(api_key):
         st.session_state.vectorstore = vectorstore
         
         # Setup QA chain
-        prompt_template = """Use the following pieces of context to answer the question at the end. 
+        template = """Use the following pieces of context to answer the question at the end.
         If you don't know the answer, just say that you don't know, don't try to make up an answer.
         
         Context: {context}
@@ -137,22 +144,20 @@ def load_existing_vectorstore(api_key):
         
         Answer:"""
         
-        PROMPT = PromptTemplate(
-            template=prompt_template, 
-            input_variables=["context", "question"]
-        )
+        prompt = ChatPromptTemplate.from_template(template)
         
         llm = ChatOpenAI(
             model_name="gpt-3.5-turbo",
             temperature=0
         )
         
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
-            return_source_documents=True,
-            chain_type_kwargs={"prompt": PROMPT}
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+        
+        qa_chain = (
+            {"context": retriever | format_docs, "question": RunnablePassthrough()}
+            | prompt
+            | llm
+            | StrOutputParser()
         )
         
         st.session_state.qa_chain = qa_chain
@@ -163,12 +168,14 @@ def load_existing_vectorstore(api_key):
 def ask_question(question):
     """Get answer for a question"""
     if not st.session_state.qa_chain:
-        return "Please upload and process PDFs first."
+        return "Please upload and process PDFs first.", []
     
-    result = st.session_state.qa_chain({"query": question})
+    # Get answer
+    answer = st.session_state.qa_chain.invoke(question)
     
-    answer = result["result"]
-    sources = result["source_documents"]
+    # Get source documents separately
+    retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 3})
+    sources = retriever.get_relevant_documents(question)
     
     return answer, sources
 
