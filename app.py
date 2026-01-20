@@ -101,7 +101,7 @@ def process_pdfs(uploaded_files, api_key):
         
         # Create LLM
         llm = ChatOpenAI(
-            model_name="gpt-3.5-turbo",
+            model_name="gpt-4.1",
             temperature=0
         )
         
@@ -298,3 +298,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
